@@ -1,0 +1,4 @@
+force_install_dir /home/steam/rust
+login anonymous
+app_update 258550 validate
+quit
