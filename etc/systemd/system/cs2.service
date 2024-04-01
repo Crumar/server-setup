@@ -1,0 +1,16 @@
+[Unit]
+Description=Counter-Strike 2 Dedicated Server
+After=network.target
+
+[Service]
+WorkingDirectory=/home/steam/cs2
+User=steam
+
+ExecStart=/home/steam/scripts/start_cs2.sh
+#ExecStopPost=/home/steam/scripts/autoupdate_cs2.sh
+
+TimeoutStartSec=30
+Restart=always
+
+[Install]
+WantedBy=default.target
