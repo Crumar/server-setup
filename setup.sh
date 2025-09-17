@@ -15,6 +15,6 @@ sed -i -E 's/[#]?Port 22/Port 22222/' /etc/ssh/sshd_config
 sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
 apt install fail2ban nginx htop net-tools dnsutils -y
 
-wget -P etc/fail2ban/ https://raw.githubusercontent.com/Crumar/server-setup/refs/heads/main/etc/fail2ban/jail.local
+wget -P /etc/fail2ban/ https://raw.githubusercontent.com/Crumar/server-setup/refs/heads/main/etc/fail2ban/jail.local
 reboot
 
