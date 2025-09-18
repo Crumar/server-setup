@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/home/steam/cs2
-User=steam
+#User=steam
 
 ExecStart=/home/steam/scripts/start_cs2.sh
 #ExecStopPost=/home/steam/scripts/autoupdate_cs2.sh
