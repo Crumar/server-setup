@@ -980,3 +980,996 @@ borg list "$REPOSITORY"
 ```
 
 If that works and the repository passphrase is correct, you can inspect, mount, and restore the available Borg archives.
+
+---
+
+# 29. Disaster recovery when BorgWarehouse is completely unavailable
+
+This section covers the worst-case recovery scenario:
+
+```text
+BorgWarehouse application:    LOST
+BorgWarehouse database:       LOST
+BorgWarehouse configuration:  LOST
+Original Debian client:       LOST
+
+Available:
+    Raw BorgWarehouse repository files
+    Borg repository passphrase
+```
+
+For the setup documented in this guide, the repository was initialized using:
+
+```bash
+borg init --encryption=repokey-blake2
+```
+
+This is important because with `repokey-blake2`, the encrypted Borg encryption key is stored inside the Borg repository itself.
+
+Therefore, if the raw repository files are intact, you do **not** need a working BorgWarehouse installation to restore the backups.
+
+You need:
+
+```text
+1. The complete raw Borg repository directory
+2. The Borg repository passphrase
+3. A machine with a compatible BorgBackup 1.x installation
+```
+
+The SSH key previously used to reach BorgWarehouse is not required when opening a copied repository directly from the local filesystem.
+
+The BorgWarehouse database is also not required to decrypt or restore a Borg repository.
+
+> If the repository used `keyfile` or `keyfile-blake2` encryption instead of `repokey-blake2`, the external Borg key file would also be required. Raw repository files alone would not be sufficient.
+
+---
+
+## 29.1 Where BorgWarehouse stores the raw repositories
+
+BorgWarehouse stores raw Borg repositories in its `repos` storage.
+
+For a bare-metal installation, the standard location is:
+
+```text
+/home/borgwarehouse/repos
+```
+
+For Docker, this is the storage mounted as the BorgWarehouse:
+
+```text
+repos
+```
+
+volume.
+
+If BorgWarehouse was configured to use external storage, an individual repository may instead reside on that external filesystem, with BorgWarehouse referring to it from the main repository pool.
+
+The exact original BorgWarehouse directory structure is not important for recovery. What matters is locating the root directory of each Borg repository.
+
+---
+
+## 29.2 Do not work on the only surviving copy
+
+Before doing anything else, make a copy of the surviving BorgWarehouse repository data.
+
+For example, if the recovered storage is mounted read-only at:
+
+```text
+/mnt/recovered-borgwarehouse
+```
+
+create a working copy:
+
+```bash
+mkdir -p /recovery/borg-repositories
+```
+
+Then copy the data:
+
+```bash
+rsync -aHAX --numeric-ids \
+    /mnt/recovered-borgwarehouse/ \
+    /recovery/borg-repositories/
+```
+
+Keep the original recovered storage untouched if possible.
+
+The recovery layout should therefore be:
+
+```text
+Original recovered storage
+        │
+        └── kept unchanged
+
+Working copy
+        │
+        └── used for Borg recovery
+```
+
+Do not run repair operations against the only surviving copy of the repository.
+
+---
+
+## 29.3 Identify the Borg repository directory
+
+A Borg 1.x repository is a filesystem directory containing files such as:
+
+```text
+README
+config
+data/
+hints.*
+index.*
+```
+
+Depending on its state, lock files or other repository files may also be present.
+
+The most important items are:
+
+```text
+config
+data/
+```
+
+The `config` file contains a repository section resembling:
+
+```ini
+[repository]
+version = 1
+segments_per_dir = 1000
+max_segment_size = 524288000
+id = <repository-id>
+```
+
+The repository ID is intrinsic to the Borg repository and remains the same even if the repository directory is moved to another filesystem or machine.
+
+A BorgWarehouse repository directory might therefore look approximately like:
+
+```text
+/recovery/borg-repositories/
+└── 4e7f816e/
+    ├── README
+    ├── config
+    ├── data/
+    ├── hints.123
+    └── index.123
+```
+
+The BorgWarehouse directory name itself is not what Borg uses cryptographically. The Borg repository metadata inside the directory identifies the repository.
+
+---
+
+## 29.4 Search automatically for Borg repositories
+
+If you have a large raw BorgWarehouse data tree and do not know which directory contains the repository, search for Borg repository configuration files.
+
+For example:
+
+```bash
+find /recovery/borg-repositories \
+    -type f \
+    -name config \
+    -print
+```
+
+Then inspect likely candidates:
+
+```bash
+cat /recovery/borg-repositories/4e7f816e/config
+```
+
+A Borg 1.x repository configuration should contain:
+
+```text
+[repository]
+```
+
+and an:
+
+```text
+id =
+```
+
+entry.
+
+A more targeted search is:
+
+```bash
+grep -RIl \
+    '^\[repository\]$' \
+    /recovery/borg-repositories
+```
+
+For each result, verify that its parent directory also contains:
+
+```text
+data/
+```
+
+For example:
+
+```bash
+ls -lah /recovery/borg-repositories/4e7f816e
+```
+
+---
+
+## 29.5 Install BorgBackup on the recovery machine
+
+On a Debian recovery machine:
+
+```bash
+sudo apt update
+sudo apt install borgbackup
+```
+
+Check the installed version:
+
+```bash
+borg --version
+```
+
+Because the repository in this guide was created with Borg 1.x, use BorgBackup 1.x for the initial recovery where possible.
+
+For example:
+
+```text
+borg 1.4.x
+```
+
+Avoid changing or migrating the repository until you have successfully listed and restored the data.
+
+---
+
+## 29.6 Open the raw repository directly
+
+Assume you have identified this directory as the repository:
+
+```text
+/recovery/borg-repositories/4e7f816e
+```
+
+Set:
+
+```bash
+export REPOSITORY="/recovery/borg-repositories/4e7f816e"
+```
+
+Because the repository is now local, do **not** use the old BorgWarehouse SSH repository URL.
+
+You no longer need:
+
+```text
+BORG_RSH
+```
+
+for this recovery.
+
+The local repository path itself is enough:
+
+```bash
+borg info "$REPOSITORY"
+```
+
+or:
+
+```bash
+borg list "$REPOSITORY"
+```
+
+Borg will ask for the repository passphrase unless it is supplied through another supported mechanism.
+
+---
+
+## 29.7 Supply the Borg passphrase
+
+For an interactive disaster recovery, the safest simple option is to allow Borg to prompt for the passphrase:
+
+```bash
+borg list "$REPOSITORY"
+```
+
+Enter the original Borg passphrase when requested.
+
+Alternatively, create a temporary protected passphrase file:
+
+```bash
+mkdir -p /root/.config/borg
+chmod 700 /root/.config/borg
+nano /root/.config/borg/passphrase
+chmod 600 /root/.config/borg/passphrase
+```
+
+Then:
+
+```bash
+export BORG_PASSCOMMAND="cat /root/.config/borg/passphrase"
+```
+
+Now run:
+
+```bash
+borg list "$REPOSITORY"
+```
+
+Do not leave recovery passphrases in insecure shell scripts or world-readable files.
+
+---
+
+## 29.8 Why the raw repository is enough with repokey-blake2
+
+The documented setup uses:
+
+```text
+repokey-blake2
+```
+
+With this mode, Borg stores the encrypted repository key inside the repository.
+
+Conceptually:
+
+```text
+Raw Borg repository
+│
+├── repository data
+├── repository metadata
+└── encrypted Borg key
+          │
+          └── unlocked by the Borg passphrase
+```
+
+Therefore the recovery chain is:
+
+```text
+Raw repository
+    +
+Borg passphrase
+    ↓
+Borg can decrypt the repository
+    ↓
+Archives can be listed
+    ↓
+Files can be restored
+```
+
+You do not need:
+
+```text
+BorgWarehouse web application
+BorgWarehouse database
+BorgWarehouse SSH configuration
+Original BorgWarehouse repository alias
+Original backup client cache
+Original backup client's SSH key
+```
+
+to read a complete local copy of a `repokey-blake2` repository.
+
+---
+
+## 29.9 What happens if the original Borg client configuration is gone
+
+The original client may previously have contained:
+
+```text
+~/.config/borg/security/
+~/.cache/borg/
+```
+
+Losing those directories does not normally prevent restoring a `repokey` repository.
+
+When Borg accesses the repository from a new machine, it may create new local cache/security information or display repository security warnings.
+
+Read such warnings carefully and confirm that you are opening the expected recovered repository.
+
+For a disaster-recovery operation, the critical secrets are the repository encryption key and passphrase. With `repokey-blake2`, the encrypted key is inside the repository.
+
+---
+
+## 29.10 First test: list the archives
+
+Once the repository and passphrase are available:
+
+```bash
+export REPOSITORY="/recovery/borg-repositories/4e7f816e"
+```
+
+Then:
+
+```bash
+borg list "$REPOSITORY"
+```
+
+A successful result might look like:
+
+```text
+folder-2026-09-05_12-00-00
+folder-2026-09-05_12-05-00
+folder-2026-09-06_18-30-00
+folder-2026-09-07_22-30-00
+```
+
+At this point, the BorgWarehouse application is irrelevant to restoration. Borg is reading the repository directly.
+
+---
+
+## 29.11 Check repository information
+
+Run:
+
+```bash
+borg info "$REPOSITORY"
+```
+
+This verifies that Borg recognizes the directory as a repository and can access its encrypted metadata.
+
+You can also inspect a particular archive:
+
+```bash
+borg info \
+    "${REPOSITORY}::folder-2026-09-07_22-30-00"
+```
+
+---
+
+## 29.12 Check the recovered repository
+
+Before doing a large restoration, run a repository check:
+
+```bash
+borg check "$REPOSITORY"
+```
+
+If the repository is large, this may take significant time and perform substantial disk I/O.
+
+If the raw repository was recovered from damaged storage, work from a copied repository and preserve the original raw recovery source.
+
+Do not immediately use destructive repair options simply because a normal check reports a problem.
+
+---
+
+## 29.13 Test archive readability without restoring
+
+Choose an archive:
+
+```text
+folder-2026-09-07_22-30-00
+```
+
+Run:
+
+```bash
+borg extract \
+    --dry-run \
+    "${REPOSITORY}::folder-2026-09-07_22-30-00"
+```
+
+This verifies that Borg can walk through the archive contents without writing the restored files to disk.
+
+---
+
+## 29.14 Restore files from the raw repository
+
+Create a destination:
+
+```bash
+mkdir -p /recovery/restored
+cd /recovery/restored
+```
+
+List the archive:
+
+```bash
+borg list \
+    "${REPOSITORY}::folder-2026-09-07_22-30-00"
+```
+
+Restore the whole archive:
+
+```bash
+borg extract \
+    "${REPOSITORY}::folder-2026-09-07_22-30-00"
+```
+
+If the original backup source was:
+
+```text
+/srv/data
+```
+
+the restored data will normally appear as:
+
+```text
+/recovery/restored/srv/data
+```
+
+---
+
+## 29.15 Restore only one file
+
+First find the archived path:
+
+```bash
+borg list \
+    "${REPOSITORY}::folder-2026-09-07_22-30-00" \
+    | grep 'report.pdf'
+```
+
+Suppose the path is:
+
+```text
+srv/data/documents/report.pdf
+```
+
+Restore it:
+
+```bash
+cd /recovery/restored
+
+borg extract \
+    "${REPOSITORY}::folder-2026-09-07_22-30-00" \
+    srv/data/documents/report.pdf
+```
+
+The result will be:
+
+```text
+/recovery/restored/srv/data/documents/report.pdf
+```
+
+---
+
+## 29.16 Mount the recovered raw repository
+
+If FUSE is available, you can browse the raw repository interactively.
+
+Install FUSE support:
+
+```bash
+sudo apt install fuse3
+```
+
+Create a mount point:
+
+```bash
+mkdir -p /mnt/borg-recovery
+```
+
+Mount:
+
+```bash
+borg mount \
+    "$REPOSITORY" \
+    /mnt/borg-recovery
+```
+
+List archives:
+
+```bash
+ls -lah /mnt/borg-recovery
+```
+
+Browse one archive:
+
+```bash
+cd /mnt/borg-recovery/folder-2026-09-07_22-30-00
+```
+
+When finished:
+
+```bash
+cd /
+borg umount /mnt/borg-recovery
+```
+
+---
+
+## 29.17 Multiple raw BorgWarehouse repositories
+
+If BorgWarehouse contained several repositories, the recovered `repos` directory might contain multiple repository directories.
+
+For example:
+
+```text
+/recovery/borg-repositories/
+├── 4e7f816e/
+│   ├── config
+│   └── data/
+│
+├── a13d920f/
+│   ├── config
+│   └── data/
+│
+└── d7c31284/
+    ├── config
+    └── data/
+```
+
+Without the BorgWarehouse database, friendly aliases may be gone.
+
+That does not prevent recovery.
+
+Test each repository independently:
+
+```bash
+borg list /recovery/borg-repositories/4e7f816e
+```
+
+```bash
+borg list /recovery/borg-repositories/a13d920f
+```
+
+```bash
+borg list /recovery/borg-repositories/d7c31284
+```
+
+The archive names and contents should make it possible to determine which repository corresponds to which original server or dataset.
+
+You can also read the repository ID:
+
+```bash
+borg config \
+    /recovery/borg-repositories/4e7f816e \
+    id
+```
+
+---
+
+## 29.18 External-storage BorgWarehouse repositories
+
+BorgWarehouse can place individual repositories on external storage.
+
+In that case, the main BorgWarehouse `repos` directory may have contained a link or reference to storage mounted elsewhere.
+
+If the central BorgWarehouse filesystem is gone but the external storage survived, search that external storage directly for Borg repositories.
+
+For example:
+
+```bash
+find /mnt/backup-storage \
+    -type f \
+    -name config \
+    -print
+```
+
+Then inspect likely candidates for:
+
+```text
+[repository]
+```
+
+and confirm that their parent directory contains:
+
+```text
+data/
+```
+
+Once found, access them directly with a local Borg path:
+
+```bash
+export REPOSITORY="/mnt/backup-storage/path/to/repository"
+
+borg list "$REPOSITORY"
+```
+
+The repository does not have to be located at its original BorgWarehouse path in order to be read by Borg.
+
+---
+
+## 29.19 If Borg reports a stale lock
+
+A repository copied after a crash may contain stale lock information.
+
+First make sure no other Borg process is accessing the working copy.
+
+Check:
+
+```bash
+ps aux | grep '[b]org'
+```
+
+If you are certain the recovered working copy is not in use elsewhere, Borg provides:
+
+```bash
+borg break-lock "$REPOSITORY"
+```
+
+Use this only after confirming that no Borg process is legitimately using that repository copy.
+
+Do not use `break-lock` casually on a live repository shared by another Borg client.
+
+---
+
+## 29.20 If `borg check` reports corruption
+
+The safest order is:
+
+```text
+1. Stop modifying the repository
+2. Preserve the original raw files
+3. Create another working copy
+4. Run normal borg check
+5. Determine the extent of corruption
+6. Attempt repair only against a disposable working copy
+```
+
+Do not start with a destructive repair command against the sole surviving repository.
+
+For example:
+
+```bash
+rsync -aHAX --numeric-ids \
+    /recovery/borg-repositories/4e7f816e/ \
+    /recovery/borg-repositories/4e7f816e-repair-copy/
+```
+
+Then investigate the copied repository:
+
+```bash
+borg check \
+    /recovery/borg-repositories/4e7f816e-repair-copy
+```
+
+If advanced repair becomes necessary, consult the Borg documentation matching the exact Borg version before proceeding.
+
+---
+
+## 29.21 If you have the raw repository but not the passphrase
+
+For the setup in this guide:
+
+```text
+Encryption mode: repokey-blake2
+```
+
+the Borg key stored in the repository is encrypted with the passphrase.
+
+Therefore:
+
+```text
+Raw repository + correct passphrase = recoverable
+
+Raw repository without passphrase = encrypted data cannot normally be restored
+```
+
+The BorgWarehouse application or database does not contain a magic replacement for the Borg encryption passphrase.
+
+This is why the passphrase must be backed up separately from the server and BorgWarehouse installation.
+
+---
+
+## 29.22 If the repository used keyfile encryption
+
+This guide originally specifies:
+
+```text
+repokey-blake2
+```
+
+so this subsection normally does not apply.
+
+However, if a different repository was initialized with:
+
+```text
+keyfile
+```
+
+or:
+
+```text
+keyfile-blake2
+```
+
+the encryption key is stored outside the repository, normally in the Borg client configuration.
+
+In that case you require both:
+
+```text
+Raw Borg repository
++
+Borg key file
++
+Key passphrase
+```
+
+A raw keyfile-encrypted repository by itself is not sufficient.
+
+This is one reason `repokey-blake2` is convenient for disaster recovery when the passphrase is securely stored elsewhere.
+
+---
+
+## 29.23 Recommended full disaster-recovery procedure
+
+Assume everything except the raw BorgWarehouse storage has been lost.
+
+### Step 1 — Attach the surviving storage
+
+Mount it read-only if possible:
+
+```text
+/mnt/recovered-borgwarehouse
+```
+
+### Step 2 — Create a working copy
+
+```bash
+mkdir -p /recovery/borg-repositories
+
+rsync -aHAX --numeric-ids \
+    /mnt/recovered-borgwarehouse/ \
+    /recovery/borg-repositories/
+```
+
+### Step 3 — Find Borg repository roots
+
+```bash
+grep -RIl \
+    '^\[repository\]$' \
+    /recovery/borg-repositories
+```
+
+Confirm each candidate contains:
+
+```text
+config
+data/
+```
+
+### Step 4 — Install Borg 1.x
+
+```bash
+sudo apt update
+sudo apt install borgbackup
+```
+
+Check:
+
+```bash
+borg --version
+```
+
+### Step 5 — Select the repository
+
+For example:
+
+```bash
+export REPOSITORY="/recovery/borg-repositories/4e7f816e"
+```
+
+### Step 6 — Supply the original Borg passphrase
+
+Either enter it interactively when Borg asks or securely configure:
+
+```bash
+export BORG_PASSCOMMAND="cat /root/.config/borg/passphrase"
+```
+
+### Step 7 — List archives
+
+```bash
+borg list "$REPOSITORY"
+```
+
+### Step 8 — Check repository access
+
+```bash
+borg info "$REPOSITORY"
+```
+
+Optionally:
+
+```bash
+borg check "$REPOSITORY"
+```
+
+### Step 9 — Test one archive
+
+```bash
+borg extract \
+    --dry-run \
+    "${REPOSITORY}::folder-2026-09-07_22-30-00"
+```
+
+### Step 10 — Restore to a new directory
+
+```bash
+mkdir -p /recovery/restored
+cd /recovery/restored
+
+borg extract \
+    "${REPOSITORY}::folder-2026-09-07_22-30-00"
+```
+
+### Step 11 — Verify the restored data
+
+For example:
+
+```bash
+ls -lah /recovery/restored
+```
+
+Check important files before putting anything back into production.
+
+---
+
+## 29.24 Minimal emergency cheat sheet
+
+If you know the raw repository directory and have the passphrase, the essential recovery can be as short as:
+
+```bash
+sudo apt install borgbackup
+```
+
+```bash
+export REPOSITORY="/path/to/raw/borg/repository"
+```
+
+```bash
+borg list "$REPOSITORY"
+```
+
+Enter the repository passphrase.
+
+Then:
+
+```bash
+mkdir -p /recovery/restored
+cd /recovery/restored
+```
+
+```bash
+borg extract \
+    "${REPOSITORY}::folder-YYYY-MM-DD_HH-MM-SS"
+```
+
+That is the fundamental disaster-recovery path.
+
+BorgWarehouse itself does not have to be running.
+
+---
+
+# 30. Raw-repository recovery checklist
+
+```text
+[ ] Preserve the original recovered BorgWarehouse files
+[ ] Create a working copy
+[ ] Locate the Borg repository root
+[ ] Confirm the directory contains config and data/
+[ ] Install a compatible BorgBackup 1.x client
+[ ] Use the repository as a local filesystem path
+[ ] Obtain the original Borg passphrase
+[ ] Run borg list
+[ ] Run borg info
+[ ] Optionally run borg check
+[ ] Test an archive with borg extract --dry-run
+[ ] Restore into a separate recovery directory
+[ ] Verify restored files before returning them to production
+```
+
+For the `repokey-blake2` configuration documented in this guide, the core disaster-recovery requirement is:
+
+```text
+COMPLETE RAW BORG REPOSITORY
+            +
+      BORG PASSPHRASE
+            ↓
+       RESTORABLE DATA
+```
+
+## References
+
+- BorgWarehouse documentation: raw repositories are stored in the `repos` storage; bare-metal installations use `/home/borgwarehouse/repos`, while Docker uses the `repos` volume:
+  https://borgwarehouse.com/docs/admin-manual/external-storage/
+
+- BorgWarehouse documentation for repository import and raw Borg repository placement:
+  https://borgwarehouse.com/docs/admin-manual/import-old-repo/
+
+- BorgBackup 1.x repository structure:
+  https://borgbackup.readthedocs.io/en/1.4.4/internals/data-structures.html
+
+- BorgBackup encryption documentation: `repokey` and `repokey-blake2` store the encrypted key inside the repository:
+  https://borgbackup.readthedocs.io/en/stable/usage/init.html
+
+- BorgBackup FAQ regarding client security information and key storage:
+  https://borgbackup.readthedocs.io/en/stable/faq.html
+
